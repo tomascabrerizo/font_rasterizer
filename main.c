@@ -1,5 +1,6 @@
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 
 typedef unsigned int u32;
 typedef unsigned short u16;
@@ -230,15 +231,14 @@ Format4 load_format4(FontDirectory font_dir, CMap cmap)
     // to be multiply by two to get the total bytes
     int bytes_used = (result.glyph_index_array - result.end_code) * 2;
     
-    // TODO(tomi): Should be posible to use memcpy here
+    // NOTE(tomi): I cannot use memcpy here becouse the file have al is data
+    // in big endian so we need to switch with GET_16 or GET_32
     for(int i = 0; i < result.seg_count_x2/2; i++)
     {
         result.end_code[i] = GET_16_MOVE(format_data);
     }
-
     // NOTE(tomi): Jump the reserve u16 
     MOVE_P(format_data, 2);
-    
     for(int i = 0; i < result.seg_count_x2/2; i++)
     {
         result.start_code[i] = GET_16_MOVE(format_data);
@@ -271,13 +271,21 @@ void print_format4(Format4 format)
 
     for(int i = 0; i < format.seg_count_x2/2; i++)
     {
-        
         fprintf(stdout, "start code: %d\t\t", format.start_code[i]);
         fprintf(stdout, "end code: %d\t\t", format.end_code[i]);
         fprintf(stdout, "id_delta: %d\t\t", format.id_delta[i]);
         fprintf(stdout, "id_range_offset: %d\n", format.id_range_offset[i]);
     }
 }
+
+typedef struct
+{
+    i16 num_of_contours;
+    i16 xMin;
+    i16 yMin;
+    i16 xMax;
+    i16 yMax;
+} GlyphDescription;
 
 int main()
 {
