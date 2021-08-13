@@ -45,6 +45,11 @@ read_entire_file(const char *file_path, u32 *file_size)
 #define GET_16_MOVE(mem) GET_16(mem); MOVE_P(mem, 2)
 #define GET_32_MOVE(mem) GET_32(mem); MOVE_P(mem, 4)
 
+// NOTE(tomi): Tags to find the different types of tables
+#define TAG(a, b, c, d) ((a) << 24 | (b) << 16 | (c) << 8 | (d) << 0)
+#define CMAP_TAG TAG('c', 'm', 'a', 'p')
+
+// NOTE(tomi): Font Directory code
 typedef struct
 {
     u32 scaler_type;
@@ -68,24 +73,24 @@ typedef struct
     TableDirectory *table_dir;
 } FontDirectory;
 
-void load_font_directory(char *data, FontDirectory *font_dir)
+void load_font_directory(char *start, FontDirectory *font_dir)
 {
     OffsetSubtable *offset_sub = &font_dir->offset_sub;
-    offset_sub->scaler_type = GET_32_MOVE(data);
-    offset_sub->num_tables = GET_16_MOVE(data);
-    offset_sub->search_range = GET_16_MOVE(data);
-    offset_sub->entry_selector = GET_16_MOVE(data);
-    offset_sub->range_shift = GET_16_MOVE(data);
+    offset_sub->scaler_type = GET_32_MOVE(start);
+    offset_sub->num_tables = GET_16_MOVE(start);
+    offset_sub->search_range = GET_16_MOVE(start);
+    offset_sub->entry_selector = GET_16_MOVE(start);
+    offset_sub->range_shift = GET_16_MOVE(start);
 
     font_dir->table_dir = malloc(offset_sub->num_tables*sizeof(TableDirectory));
 
     for(i32 i = 0; i < offset_sub->num_tables; ++i)
     {
         TableDirectory *table_dir = font_dir->table_dir + i;
-        table_dir->tag = GET_32_MOVE(data);
-        table_dir->check_sum = GET_32_MOVE(data);
-        table_dir->offset = GET_32_MOVE(data);
-        table_dir->length = GET_32_MOVE(data);
+        table_dir->tag = GET_32_MOVE(start);
+        table_dir->check_sum = GET_32_MOVE(start);
+        table_dir->offset = GET_32_MOVE(start);
+        table_dir->length = GET_32_MOVE(start);
     }
 }
 
@@ -106,6 +111,62 @@ void print_font_directory(FontDirectory font_dir)
     }
 }
 
+// NOTE(tomi): CMap table code
+typedef struct
+{
+    u16 platform_id;
+    u16 platform_specific_id;
+    u32 offset;
+} Subtable;
+
+typedef struct
+{
+    u16 version;
+    u16 num_subtables;
+    Subtable *subtables;
+
+} CMap;
+
+CMap get_cmap_table(char *start, FontDirectory font_dir)
+{
+    CMap result = {0};
+    for(int i = 0; i < font_dir.offset_sub.num_tables; ++i)
+    {
+        TableDirectory *table_dir = font_dir.table_dir + i;
+        if(table_dir->tag == CMAP_TAG)
+        {
+            char *cmap_start = start + table_dir->offset;
+            char *cmap_data = start + table_dir->offset;
+            result.version = GET_16_MOVE(cmap_data);
+            result.num_subtables = GET_16_MOVE(cmap_data);
+
+            result.subtables = malloc(result.num_subtables*sizeof(Subtable));
+
+            for(int i = 0; i < result.num_subtables; ++i)
+            {
+                Subtable *subtable = result.subtables + i;
+                subtable->platform_id = GET_16_MOVE(cmap_data);
+                subtable->platform_specific_id = GET_16_MOVE(cmap_data);
+                subtable->offset = GET_32_MOVE(cmap_data);
+
+                fprintf(stdout, "-----------------------\n");
+                fprintf(stdout, "Offset: %d\n", subtable->offset);
+                fprintf(stdout, "Format: %d\n", GET_16(cmap_start + subtable->offset));
+            }
+
+            return result;
+        }
+    }
+    return result;
+}
+
+void print_cmap_table(CMap cmap)
+{
+    fprintf(stdout, "-----------------------\n");
+    fprintf(stdout, "Version: %d\n", cmap.version);
+    fprintf(stdout, "Number of subtables: %d\n", cmap.num_subtables);
+}
+
 int main()
 {
     u32 file_size = 0;
@@ -116,6 +177,8 @@ int main()
         FontDirectory font_dir = {0};
         load_font_directory(start, &font_dir);
         print_font_directory(font_dir);
+        CMap cmap = get_cmap_table(start, font_dir);
+        print_cmap_table(cmap);
     }
     
     return 0;
