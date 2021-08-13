@@ -71,10 +71,14 @@ typedef struct
 {
     OffsetSubtable offset_sub;
     TableDirectory *table_dir;
+
+    char *cmap_ptr;
 } FontDirectory;
 
 void load_font_directory(char *start, FontDirectory *font_dir)
 {
+    char *saved_start = start;
+
     OffsetSubtable *offset_sub = &font_dir->offset_sub;
     offset_sub->scaler_type = GET_32_MOVE(start);
     offset_sub->num_tables = GET_16_MOVE(start);
@@ -91,6 +95,18 @@ void load_font_directory(char *start, FontDirectory *font_dir)
         table_dir->check_sum = GET_32_MOVE(start);
         table_dir->offset = GET_32_MOVE(start);
         table_dir->length = GET_32_MOVE(start);
+    }
+
+    for(int i = 0; i < offset_sub->num_tables; ++i)
+    {
+        TableDirectory *table_dir = font_dir->table_dir + i;
+        switch(table_dir->tag)
+        {
+            case CMAP_TAG:
+            {
+                font_dir->cmap_ptr = saved_start + table_dir->offset;
+            }break;
+        }
     }
 }
 
@@ -127,44 +143,140 @@ typedef struct
 
 } CMap;
 
-CMap get_cmap_table(char *start, FontDirectory font_dir)
+CMap load_cmap_table(FontDirectory font_dir)
 {
     CMap result = {0};
-    for(int i = 0; i < font_dir.offset_sub.num_tables; ++i)
+    
+    char *cmap_data = font_dir.cmap_ptr;
+
+    result.version = GET_16_MOVE(cmap_data);
+    result.num_subtables = GET_16_MOVE(cmap_data);
+
+    result.subtables = malloc(result.num_subtables*sizeof(Subtable));
+
+    for(int i = 0; i < result.num_subtables; ++i)
     {
-        TableDirectory *table_dir = font_dir.table_dir + i;
-        if(table_dir->tag == CMAP_TAG)
-        {
-            char *cmap_start = start + table_dir->offset;
-            char *cmap_data = start + table_dir->offset;
-            result.version = GET_16_MOVE(cmap_data);
-            result.num_subtables = GET_16_MOVE(cmap_data);
-
-            result.subtables = malloc(result.num_subtables*sizeof(Subtable));
-
-            for(int i = 0; i < result.num_subtables; ++i)
-            {
-                Subtable *subtable = result.subtables + i;
-                subtable->platform_id = GET_16_MOVE(cmap_data);
-                subtable->platform_specific_id = GET_16_MOVE(cmap_data);
-                subtable->offset = GET_32_MOVE(cmap_data);
-
-                fprintf(stdout, "-----------------------\n");
-                fprintf(stdout, "Offset: %d\n", subtable->offset);
-                fprintf(stdout, "Format: %d\n", GET_16(cmap_start + subtable->offset));
-            }
-
-            return result;
-        }
+        Subtable *subtable = result.subtables + i;
+        subtable->platform_id = GET_16_MOVE(cmap_data);
+        subtable->platform_specific_id = GET_16_MOVE(cmap_data);
+        subtable->offset = GET_32_MOVE(cmap_data);
     }
+
     return result;
 }
 
 void print_cmap_table(CMap cmap)
 {
     fprintf(stdout, "-----------------------\n");
+    fprintf(stdout, "           CMAP        \n");
+    fprintf(stdout, "-----------------------\n");
     fprintf(stdout, "Version: %d\n", cmap.version);
     fprintf(stdout, "Number of subtables: %d\n", cmap.num_subtables);
+
+    for(int i = 0; i < cmap.num_subtables; ++i)
+    {
+        Subtable *subtable = cmap.subtables + i;
+        fprintf(stdout, "-----------------------\n");
+        fprintf(stdout, "PlatformID: %d\n", subtable->platform_id);
+        fprintf(stdout, "PlatformEspID: %d\n", subtable->platform_specific_id);
+        fprintf(stdout, "Offset: %d\n", subtable->offset);
+    }
+}
+
+typedef struct
+{
+    u16 format;
+    u16 length;
+    u16 language;
+    u16 seg_count_x2;
+    u16 search_range;
+    u16 entry_selector;
+    u16 range_shift;
+    
+    // NOTE(tomi) The format dont take into account the size of this pointers
+    u16 *end_code;
+    u16 reserved_pad;
+    
+    u16 *start_code;
+    u16 *id_delta;
+    u16 *id_range_offset;
+    u16 *glyph_index_array;
+} Format4;
+
+Format4 load_format4(FontDirectory font_dir, CMap cmap)
+{
+    Format4 result = {};
+    char * format_data = font_dir.cmap_ptr + cmap.subtables[0].offset; 
+
+    result.format = GET_16_MOVE(format_data);
+    result.length = GET_16_MOVE(format_data);
+    result.language = GET_16_MOVE(format_data);
+    result.seg_count_x2 = GET_16_MOVE(format_data);
+    result.search_range = GET_16_MOVE(format_data);
+    result.entry_selector = GET_16_MOVE(format_data);
+    result.range_shift = GET_16_MOVE(format_data);
+ 
+    // NOTE(tomi): Only allocates memory for the arrays not for the format struct 
+    u32 format_array_size = (result.length - (sizeof(Format4) - sizeof(u16 *)*5));
+    u8 *format_array = malloc(format_array_size);
+    
+    result.end_code = (u16 *)format_array;
+    result.start_code = result.end_code + (result.seg_count_x2/2); 
+    result.id_delta = result.start_code + (result.seg_count_x2/2); 
+    result.id_range_offset = result.id_delta + (result.seg_count_x2/2); 
+    result.glyph_index_array = result.id_range_offset + (result.seg_count_x2/2);
+    
+    // NOTE(tomi): We are performing this subtraction in u16 so the result have
+    // to be multiply by two to get the total bytes
+    int bytes_used = (result.glyph_index_array - result.end_code) * 2;
+    
+    // TODO(tomi): Should be posible to use memcpy here
+    for(int i = 0; i < result.seg_count_x2/2; i++)
+    {
+        result.end_code[i] = GET_16_MOVE(format_data);
+    }
+
+    // NOTE(tomi): Jump the reserve u16 
+    MOVE_P(format_data, 2);
+    
+    for(int i = 0; i < result.seg_count_x2/2; i++)
+    {
+        result.start_code[i] = GET_16_MOVE(format_data);
+    }
+    for(int i = 0; i < result.seg_count_x2/2; i++)
+    {
+        result.id_delta[i] = GET_16_MOVE(format_data);
+    }
+    for(int i = 0; i < result.seg_count_x2/2; i++)
+    {
+        result.id_range_offset[i] = GET_16_MOVE(format_data);
+    }
+     
+    int bytes_left = format_array_size - bytes_used;
+    for(int i = 0; i < bytes_left/2; ++i)
+    {
+        result.glyph_index_array[i] = GET_16_MOVE(format_data); 
+    }
+
+    return result;
+}
+
+void print_format4(Format4 format)
+{
+    fprintf(stdout, "-----------------------\n");
+    fprintf(stdout, "          FORMAT       \n");
+    fprintf(stdout, "-----------------------\n");
+    fprintf(stdout, "Format: %d\n", format.format);
+    fprintf(stdout, "SegCountX2: %d\n", format.seg_count_x2);
+
+    for(int i = 0; i < format.seg_count_x2/2; i++)
+    {
+        
+        fprintf(stdout, "start code: %d\t\t", format.start_code[i]);
+        fprintf(stdout, "end code: %d\t\t", format.end_code[i]);
+        fprintf(stdout, "id_delta: %d\t\t", format.id_delta[i]);
+        fprintf(stdout, "id_range_offset: %d\n", format.id_range_offset[i]);
+    }
 }
 
 int main()
@@ -176,9 +288,10 @@ int main()
         char *start = (char *)file_content;
         FontDirectory font_dir = {0};
         load_font_directory(start, &font_dir);
-        print_font_directory(font_dir);
-        CMap cmap = get_cmap_table(start, font_dir);
+        CMap cmap = load_cmap_table(font_dir);
         print_cmap_table(cmap);
+        Format4 format = load_format4(font_dir, cmap);
+        print_format4(format);
     }
     
     return 0;
