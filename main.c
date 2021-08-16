@@ -373,10 +373,10 @@ typedef union
 typedef struct
 {
     i16 number_of_contours;
-    u16 x_min;
-    u16 y_min;
-    u16 x_max;
-    u16 y_max;
+    i16 x_min;
+    i16 y_min;
+    i16 x_max;
+    i16 y_max;
 
     u16 *end_pts_of_contours;
     u16 instruction_length;
@@ -491,10 +491,10 @@ Glyph get_glyph(FontDirectory font_dir, Format4 format, u16 char_code)
     return result;
 }
 
-void print_glyph(Glyph glyph)
+void print_glyph(Glyph glyph, char char_code)
 {
     fprintf(stdout, "-----------------------\n");
-    fprintf(stdout, "          GLYPH        \n");
+    fprintf(stdout, "          GLYPH '%c'   \n", char_code);
     fprintf(stdout, "-----------------------\n");
     fprintf(stdout, "number_of_contours: %d\n", glyph.number_of_contours);
     fprintf(stdout, "x_min: %d\n", glyph.x_min);
@@ -506,6 +506,10 @@ void print_glyph(Glyph glyph)
     {
         fprintf(stdout, "end_pts_of_contours: %d\n", glyph.end_pts_of_contours[i]);
     }
+    int last_index = glyph.end_pts_of_contours[glyph.number_of_contours-1];
+    for(int i = 0; i <= last_index; ++i) {
+		printf("%d)\t(%5d,%5d)\n", i, glyph.x_coords[i], glyph.y_coords[i]);
+	}
 }
 
 int main()
@@ -523,13 +527,13 @@ int main()
         Format4 format = load_format4(font_dir, cmap);
         
         Glyph glyph = get_glyph(font_dir, format, 'A');
-        print_glyph(glyph);
+        print_glyph(glyph, 'A');
         
         glyph = get_glyph(font_dir, format, 'B');
-        print_glyph(glyph);
+        print_glyph(glyph, 'B');
         
         glyph = get_glyph(font_dir, format, 'C');
-        print_glyph(glyph);
+        print_glyph(glyph, 'C');
     }
     
     return 0;
