@@ -49,6 +49,9 @@ read_entire_file(const char *file_path, u32 *file_size)
 // NOTE(tomi): Tags to find the different types of tables
 #define TAG(a, b, c, d) ((a) << 24 | (b) << 16 | (c) << 8 | (d) << 0)
 #define CMAP_TAG TAG('c', 'm', 'a', 'p')
+#define HEAD_TAG TAG('h', 'e', 'a', 'd')
+#define LOCA_TAG TAG('l', 'o', 'c', 'a')
+#define GLYF_TAG TAG('g', 'l', 'y', 'f')
 
 // NOTE(tomi): Font Directory code
 typedef struct
@@ -74,6 +77,9 @@ typedef struct
     TableDirectory *table_dir;
 
     char *cmap_ptr;
+    char *head_ptr;
+    char *loca_ptr;
+    char *glyf_ptr;
 } FontDirectory;
 
 void load_font_directory(char *start, FontDirectory *font_dir)
@@ -106,6 +112,18 @@ void load_font_directory(char *start, FontDirectory *font_dir)
             case CMAP_TAG:
             {
                 font_dir->cmap_ptr = saved_start + table_dir->offset;
+            }break;
+            case HEAD_TAG:
+            {
+                font_dir->head_ptr = saved_start + table_dir->offset;
+            }break;
+            case LOCA_TAG:
+            {
+                font_dir->loca_ptr = saved_start + table_dir->offset;
+            }break;
+            case GLYF_TAG:
+            {
+                font_dir->glyf_ptr = saved_start + table_dir->offset;
             }break;
         }
     }
@@ -315,6 +333,181 @@ u16 get_glyph_index(Format4 format, u16 char_code)
     return 0;
 }
 
+i16 get_loca_version(FontDirectory font_dir)
+{
+    i16 result = GET_16(font_dir.head_ptr + 50);
+    return result;
+}
+
+u32 get_glyph_offset(FontDirectory font_dir, u16 glyp_index)
+{
+    u32 result = 0;
+    u32 u32_table = get_loca_version(font_dir);
+    if(u32_table)
+    {
+        result = GET_32((u32 *)font_dir.loca_ptr + glyp_index); 
+    }
+    else // u16_table
+    {
+        result = GET_16((u16 *)font_dir.loca_ptr + glyp_index) * 2; 
+    }
+    return result;
+}
+
+typedef union 
+{
+    struct
+    {
+        u8 on_curver : 1;
+        u8 x_short: 1;
+        u8 y_short: 1;
+        u8 repeat: 1;
+        u8 pos_x_short: 1;
+        u8 pos_y_short: 1;
+        u8 reserved1: 1;
+        u8 reserved2: 1;
+    };
+    u8 flag;
+} OutlineFlag;
+
+typedef struct
+{
+    i16 number_of_contours;
+    u16 x_min;
+    u16 y_min;
+    u16 x_max;
+    u16 y_max;
+
+    u16 *end_pts_of_contours;
+    u16 instruction_length;
+    u8 *instructions;
+    OutlineFlag *flags;
+    i16 *x_coords;
+    i16 *y_coords;
+}Glyph;
+
+Glyph get_glyph(FontDirectory font_dir, Format4 format, u16 char_code)
+{
+    i16 glyph_index = get_glyph_index(format, char_code);
+    u32 glyph_offset = get_glyph_offset(font_dir, glyph_index);
+    u8 *glyph_ptr = (u8 *)font_dir.glyf_ptr + glyph_offset;
+    Glyph result = {};
+    result.number_of_contours = GET_16_MOVE(glyph_ptr);
+    result.x_min = GET_16_MOVE(glyph_ptr);
+    result.y_min = GET_16_MOVE(glyph_ptr);
+    result.x_max = GET_16_MOVE(glyph_ptr);
+    result.y_max = GET_16_MOVE(glyph_ptr);
+
+    result.end_pts_of_contours = malloc(result.number_of_contours*sizeof(u16));
+    for(int i = 0; i < result.number_of_contours; ++i)
+    {
+        result.end_pts_of_contours[i] = GET_16_MOVE(glyph_ptr);
+    }
+    result.instruction_length = GET_16_MOVE(glyph_ptr);
+    result.instructions = malloc(result.instruction_length);
+    memcpy(result.instructions, glyph_ptr, result.instruction_length);
+    MOVE_P(glyph_ptr, result.instruction_length);
+    
+    i32 array_size = result.end_pts_of_contours[result.number_of_contours-1] + 1;
+    result.flags = malloc(array_size);
+    for(i32 i = 0; i < array_size; ++i)
+    {
+        result.flags[i].flag = *glyph_ptr;
+        glyph_ptr++;
+        if(result.flags[i].repeat)
+        {
+            i32 repeat_count = *glyph_ptr;
+            while(repeat_count)
+            {
+                ++i;
+                result.flags[i] = result.flags[i-1];
+                --repeat_count;
+            }
+            glyph_ptr++;
+        }
+    }
+    
+    result.x_coords = malloc(array_size*sizeof(u16));
+    i16 current_coord = 0;
+    i16 prev_coord = 0;
+    for(i32 i = 0; i < array_size; ++i)
+    {
+        u8 flag = result.flags[i].x_short << 1 | result.flags[i].pos_x_short;
+        switch(flag)
+        {
+            case 0: // 0 0
+            {
+                current_coord = GET_16_MOVE(glyph_ptr);
+            }break; // 0 1
+            case 1:
+            {
+                current_coord = 0;
+            }break;
+            case 2: // 1 0
+            {
+                current_coord = (*(u8 *)glyph_ptr++)*(-1);
+            }break;
+            case 3: // 1 1
+            {
+                current_coord = *(u8 *)glyph_ptr++;
+            }break;
+        }
+
+        result.x_coords[i] = current_coord + prev_coord;
+        prev_coord = result.x_coords[i];
+    }
+
+    result.y_coords = malloc(array_size*sizeof(u16));
+    current_coord = 0;
+    prev_coord = 0;
+    for(i32 i = 0; i < array_size; ++i)
+    {
+        u8 flag = result.flags[i].y_short << 1 | result.flags[i].pos_y_short;
+        switch(flag)
+        {
+            case 0: // 0 0
+            {
+                current_coord = GET_16_MOVE(glyph_ptr);
+            }break; // 0 1
+            case 1:
+            {
+                current_coord = 0;
+            }break;
+            case 2: // 1 0
+            {
+                current_coord = (*(u8 *)glyph_ptr++)*(-1);
+            }break;
+            case 3: // 1 1
+            {
+                current_coord = *(u8 *)glyph_ptr++;
+            }break;
+        }
+
+        result.y_coords[i] = prev_coord + current_coord;
+        prev_coord = result.y_coords[i];
+    }
+    
+
+    return result;
+}
+
+void print_glyph(Glyph glyph)
+{
+    fprintf(stdout, "-----------------------\n");
+    fprintf(stdout, "          GLYPH        \n");
+    fprintf(stdout, "-----------------------\n");
+    fprintf(stdout, "number_of_contours: %d\n", glyph.number_of_contours);
+    fprintf(stdout, "x_min: %d\n", glyph.x_min);
+    fprintf(stdout, "y_min: %d\n", glyph.y_min);
+    fprintf(stdout, "x_max: %d\n", glyph.x_max);
+    fprintf(stdout, "y_max: %d\n", glyph.y_max);
+
+    for(i32 i = 0; i < glyph.number_of_contours; ++i)
+    {
+        fprintf(stdout, "end_pts_of_contours: %d\n", glyph.end_pts_of_contours[i]);
+    }
+}
+
 int main()
 {
     u32 file_size = 0;
@@ -324,13 +517,19 @@ int main()
     {
         char *start = (char *)file_content;
         FontDirectory font_dir = {0};
+        
         load_font_directory(start, &font_dir);
         CMap cmap = load_cmap_table(font_dir);
-        print_cmap_table(cmap);
         Format4 format = load_format4(font_dir, cmap);
-        print_format4(format);
-        int glyph_index = get_glyph_index(format, 'B');
-        fprintf(stdout, "glyp index: %d\n", glyph_index);
+        
+        Glyph glyph = get_glyph(font_dir, format, 'A');
+        print_glyph(glyph);
+        
+        glyph = get_glyph(font_dir, format, 'B');
+        print_glyph(glyph);
+        
+        glyph = get_glyph(font_dir, format, 'C');
+        print_glyph(glyph);
     }
     
     return 0;
