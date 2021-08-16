@@ -52,6 +52,8 @@ read_entire_file(const char *file_path, u32 *file_size)
 #define HEAD_TAG TAG('h', 'e', 'a', 'd')
 #define LOCA_TAG TAG('l', 'o', 'c', 'a')
 #define GLYF_TAG TAG('g', 'l', 'y', 'f')
+#define HHEA_TAG TAG('h', 'h', 'e', 'a')
+#define HMTX_TAG TAG('h', 'm', 't', 'x')
 
 // NOTE(tomi): Font Directory code
 typedef struct
@@ -80,6 +82,8 @@ typedef struct
     char *head_ptr;
     char *loca_ptr;
     char *glyf_ptr;
+    char *hhea_ptr;
+    char *hmtx_ptr;
 } FontDirectory;
 
 void load_font_directory(char *start, FontDirectory *font_dir)
@@ -124,6 +128,14 @@ void load_font_directory(char *start, FontDirectory *font_dir)
             case GLYF_TAG:
             {
                 font_dir->glyf_ptr = saved_start + table_dir->offset;
+            }break;
+            case HHEA_TAG:
+            {
+                font_dir->hhea_ptr = saved_start + table_dir->offset;
+            }break;
+            case HMTX_TAG:
+            {
+                font_dir->hmtx_ptr = saved_start + table_dir->offset;
             }break;
         }
     }
@@ -512,6 +524,95 @@ void print_glyph(Glyph glyph, char char_code)
 	}
 }
 
+typedef struct
+{
+    i32 version;
+
+    i16 ascent;
+    i16 descent;
+    i16 line_gap;
+
+    u16 advance_width_max;
+    
+    i16 min_left_side_bearing;
+    i16 min_right_side_bearing;
+
+    i16 x_max_extent;
+
+    i16 caret_slope_rise;
+    i16 caret_slope_run;
+    
+    i16 care_offset;
+
+    i16 reserved1;
+    i16 reserved2;
+    i16 reserved3;
+    i16 reserved4;
+
+    i16 metric_data_format;
+    
+    u16 num_of_long_hormetrics;
+
+} Hhead;
+
+Hhead load_hhea_table(FontDirectory font_dir)
+{
+    char *hhea_ptr = font_dir.hhea_ptr;
+    Hhead result = {};
+    result.version = GET_32_MOVE(hhea_ptr);
+    
+    result.ascent = GET_16_MOVE(hhea_ptr);
+    result.descent = GET_16_MOVE(hhea_ptr);
+    result.line_gap = GET_16_MOVE(hhea_ptr);
+
+    result.advance_width_max = GET_16_MOVE(hhea_ptr);
+    result.min_left_side_bearing = GET_16_MOVE(hhea_ptr);
+    result.min_right_side_bearing = GET_16_MOVE(hhea_ptr);
+
+    result.x_max_extent = GET_16_MOVE(hhea_ptr);
+
+    result.caret_slope_rise = GET_16_MOVE(hhea_ptr);
+    result.caret_slope_run = GET_16_MOVE(hhea_ptr);
+    result.care_offset = GET_16_MOVE(hhea_ptr);
+
+    result.reserved1 = GET_16_MOVE(hhea_ptr);;
+    result.reserved2 = GET_16_MOVE(hhea_ptr);;
+    result.reserved3 = GET_16_MOVE(hhea_ptr);;
+    result.reserved4 = GET_16_MOVE(hhea_ptr);;
+
+    result.metric_data_format = GET_16_MOVE(hhea_ptr);
+    result.num_of_long_hormetrics = GET_16_MOVE(hhea_ptr);
+    
+    return result;
+}
+
+typedef struct
+{
+    u16 advance_width;
+    i16 left_side_bearing;
+} LongHorMetric;
+
+typedef struct
+{
+    LongHorMetric *h_metrics;
+} Hmtx;
+
+Hmtx load_hmtx_table(FontDirectory font_dir, Hhead hhead)
+{
+    char *hmtx_ptr = font_dir.hmtx_ptr;
+    Hmtx result = {};
+    
+    result.h_metrics = malloc(hhead.num_of_long_hormetrics*sizeof(LongHorMetric));
+    for(i32 i = 0; i < hhead.num_of_long_hormetrics; ++i)
+    {
+        LongHorMetric *h_metric = result.h_metrics + i;
+        h_metric->advance_width = GET_16_MOVE(hmtx_ptr);
+        h_metric->left_side_bearing = GET_16_MOVE(hmtx_ptr);
+    }
+
+    return result;
+}
+
 int main()
 {
     u32 file_size = 0;
@@ -523,7 +624,12 @@ int main()
         FontDirectory font_dir = {0};
         
         load_font_directory(start, &font_dir);
+        
         CMap cmap = load_cmap_table(font_dir);
+        Hhead hhea = load_hhea_table(font_dir);
+        Hmtx hmtx = load_hmtx_table(font_dir, hhea);
+        (void)hmtx;
+
         Format4 format = load_format4(font_dir, cmap);
         
         Glyph glyph = get_glyph(font_dir, format, 'A');
