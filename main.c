@@ -264,7 +264,7 @@ Format4 load_format4(FontDirectory font_dir, CMap cmap)
 void print_format4(Format4 format)
 {
     fprintf(stdout, "-----------------------\n");
-    fprintf(stdout, "          FORMAT       \n");
+    fprintf(stdout, "         FORMAT        \n");
     fprintf(stdout, "-----------------------\n");
     fprintf(stdout, "Format: %d\n", format.format);
     fprintf(stdout, "SegCountX2: %d\n", format.seg_count_x2);
@@ -278,19 +278,48 @@ void print_format4(Format4 format)
     }
 }
 
-typedef struct
+u16 get_glyph_index(Format4 format, u16 char_code)
 {
-    i16 num_of_contours;
-    i16 xMin;
-    i16 yMin;
-    i16 xMax;
-    i16 yMax;
-} GlyphDescription;
+    i32 index = -1;
+    u16 *ptr = 0;
+    for(int i = 0; i < format.seg_count_x2/2; i++)
+    {
+        if(format.end_code[i] >= char_code)
+        {
+            index = i;
+            break;
+        }
+    }
+
+    if(index != -1)
+    {
+        if(format.start_code[index] <= char_code)
+        {
+            if(format.id_range_offset[index])
+            {
+                ptr = (format.id_range_offset + index) + 
+                      (format.id_range_offset[index] / 2) + 
+                      (char_code - format.start_code[index]);
+                if(*ptr)
+                {
+                    return (*ptr + format.id_delta[index]);
+                }
+            }
+            else
+            {
+                return (char_code + format.id_delta[index]);
+            }
+        }
+    }
+
+    return 0;
+}
 
 int main()
 {
     u32 file_size = 0;
     const char *file_content = read_entire_file("fonts/UbuntuMono-Regular.ttf", &file_size);
+    //const char *file_content = read_entire_file("fonts/Envy Code R.ttf", &file_size);
     if(file_content)
     {
         char *start = (char *)file_content;
@@ -300,6 +329,8 @@ int main()
         print_cmap_table(cmap);
         Format4 format = load_format4(font_dir, cmap);
         print_format4(format);
+        int glyph_index = get_glyph_index(format, 'B');
+        fprintf(stdout, "glyp index: %d\n", glyph_index);
     }
     
     return 0;
