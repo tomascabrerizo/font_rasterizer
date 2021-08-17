@@ -1,6 +1,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <assert.h>
 
 typedef unsigned int u32;
 typedef unsigned short u16;
@@ -10,7 +11,17 @@ typedef int i32;
 typedef short i16; 
 typedef char i8;
 
-typedef float r32;
+typedef float f32;
+
+typedef struct
+{
+    f32 x, y;
+} v2f;
+
+typedef struct
+{
+    i32 x, y;
+} v2i;
 
 static char * 
 read_entire_file(const char *file_path, u32 *file_size)
@@ -506,7 +517,7 @@ Glyph get_glyph(FontDirectory font_dir, Format4 format, u16 char_code)
 void print_glyph(Glyph glyph, char char_code)
 {
     fprintf(stdout, "-----------------------\n");
-    fprintf(stdout, "          GLYPH '%c'   \n", char_code);
+    fprintf(stdout, "       GLYPH '%c'\n", char_code);
     fprintf(stdout, "-----------------------\n");
     fprintf(stdout, "number_of_contours: %d\n", glyph.number_of_contours);
     fprintf(stdout, "x_min: %d\n", glyph.x_min);
@@ -597,13 +608,15 @@ typedef struct
     LongHorMetric *h_metrics;
 } Hmtx;
 
-Hmtx load_hmtx_table(FontDirectory font_dir, Hhead hhead)
+Hmtx load_hmtx_table(FontDirectory font_dir)
 {
     char *hmtx_ptr = font_dir.hmtx_ptr;
     Hmtx result = {};
-    
-    result.h_metrics = malloc(hhead.num_of_long_hormetrics*sizeof(LongHorMetric));
-    for(i32 i = 0; i < hhead.num_of_long_hormetrics; ++i)
+ 
+    int num_of_long_hormetrics = GET_16(font_dir.hhea_ptr + 34);
+
+    result.h_metrics = malloc(num_of_long_hormetrics*sizeof(LongHorMetric));
+    for(i32 i = 0; i < num_of_long_hormetrics; ++i)
     {
         LongHorMetric *h_metric = result.h_metrics + i;
         h_metric->advance_width = GET_16_MOVE(hmtx_ptr);
@@ -611,6 +624,78 @@ Hmtx load_hmtx_table(FontDirectory font_dir, Hhead hhead)
     }
 
     return result;
+}
+
+void generate_bezier_points(v2f *output, i32 *output_size, v2f p0, v2f p1, v2f p2)
+{
+    // NOTE(tomi): Cuadratic bezier curve: (1-t)*(1-t)*p0 + 2*t*(1-t)*p1 + t*t*p2
+    i32 subpoints = 5;
+    f32 advance_per_iter = 1.0f/(f32)subpoints;
+    i32 size = 0;
+    for(i32 i = 1; i <= subpoints; ++i)
+    {
+        f32 t = i*advance_per_iter;
+        f32 t1 = (1.0f - advance_per_iter);
+        output[i].x = t1*t1*p0.x + 2*t*t1*p1.x + t*t*p2.x;
+        output[i].y = t1*t1*p0.y + 2*t*t1*p1.y + t*t*p2.y;
+        size++;
+    }
+    *output_size = size;
+}
+
+void generate_glyph_point(Glyph glyph, v2f *output, i32 *output_size)
+{
+    i32 contour_start = 0;
+    for(i32 i = 0; i < glyph.number_of_contours; ++i)
+    {
+        i32 contour_length =  glyph.end_pts_of_contours[i] - contour_start;       
+        
+        for(i32 j = 0; j < glyph.end_pts_of_contours[i]; ++j)
+        {
+            i32 point_index = j + contour_start;
+            i32 next_point_index = ((j + 1) % contour_length) + contour_start; 
+            
+            OutlineFlag flag = glyph.flags[point_index];
+            OutlineFlag next_flag = glyph.flags[next_point_index];           
+            
+            v2f point = {
+                .x = glyph.x_coords[point_index],
+                .y = glyph.y_coords[point_index],
+            };
+            v2f next_point = {
+                .x = glyph.x_coords[next_point_index],
+                .y = glyph.y_coords[next_point_index],
+            };
+
+            if(flag.on_curver)
+            {
+                output[*output_size] = point;
+                *output_size += 1;
+            }
+            else
+            {
+                v2f p0 = output[(*output_size)-1];
+                v2f p1 = point;
+                v2f p2 = next_point; 
+                if(next_flag.on_curver) // NOTE(tomi): Quadratic curve
+                {
+                    i32 size = 0;
+                    generate_bezier_points(output + *(output_size), &size, p0, p1, p2);
+                    *output_size += size;
+                    j++; // NOTE(tomi) We already add the next point
+                }
+                else // NOTE(tomi): Cubic curve
+                {
+                    p2.x = p1.x + 0.5f*(p2.x - p1.x);
+                    p2.y = p1.x + 0.5f*(p2.y - p1.y);
+                    i32 size = 0;
+                    generate_bezier_points(output + *(output_size), &size, p0, p1, p2);
+                    *output_size += size;
+                }
+            }
+        }
+        contour_start = glyph.end_pts_of_contours[i];
+    }
 }
 
 int main()
@@ -627,19 +712,19 @@ int main()
         
         CMap cmap = load_cmap_table(font_dir);
         Hhead hhea = load_hhea_table(font_dir);
-        Hmtx hmtx = load_hmtx_table(font_dir, hhea);
+        (void)hhea;
+        Hmtx hmtx = load_hmtx_table(font_dir);
         (void)hmtx;
 
         Format4 format = load_format4(font_dir, cmap);
         
+        static v2f buffer[1024];
+        i32 buffer_size = 0;
+    
         Glyph glyph = get_glyph(font_dir, format, 'A');
+        generate_glyph_point(glyph, buffer, &buffer_size);
+        printf("Number of Points generated: %d\n", buffer_size);
         print_glyph(glyph, 'A');
-        
-        glyph = get_glyph(font_dir, format, 'B');
-        print_glyph(glyph, 'B');
-        
-        glyph = get_glyph(font_dir, format, 'C');
-        print_glyph(glyph, 'C');
     }
     
     return 0;
