@@ -37,7 +37,7 @@ read_entire_file(const char *file_path, u32 *file_size)
         if(size_to_read)
         {
             *file_size = size_to_read;
-            result = malloc(size_to_read);
+            result = (char *)malloc(size_to_read);
             fread(result, 1, size_to_read, file);
         }
         fclose(file);
@@ -108,7 +108,7 @@ void load_font_directory(char *start, FontDirectory *font_dir)
     offset_sub->entry_selector = GET_16_MOVE(start);
     offset_sub->range_shift = GET_16_MOVE(start);
 
-    font_dir->table_dir = malloc(offset_sub->num_tables*sizeof(TableDirectory));
+    font_dir->table_dir = (TableDirectory *)malloc(offset_sub->num_tables*sizeof(TableDirectory));
 
     for(i32 i = 0; i < offset_sub->num_tables; ++i)
     {
@@ -187,14 +187,14 @@ typedef struct
 
 CMap load_cmap_table(FontDirectory font_dir)
 {
-    CMap result = {0};
+    CMap result = {};
     
     char *cmap_data = font_dir.cmap_ptr;
 
     result.version = GET_16_MOVE(cmap_data);
     result.num_subtables = GET_16_MOVE(cmap_data);
 
-    result.subtables = malloc(result.num_subtables*sizeof(Subtable));
+    result.subtables = (Subtable *)malloc(result.num_subtables*sizeof(Subtable));
 
     for(int i = 0; i < result.num_subtables; ++i)
     {
@@ -260,7 +260,7 @@ Format4 load_format4(FontDirectory font_dir, CMap cmap)
  
     // NOTE(tomi): Only allocates memory for the arrays not for the format struct 
     u32 format_array_size = (result.length - (sizeof(Format4) - sizeof(u16 *)*5));
-    u8 *format_array = malloc(format_array_size);
+    u8 *format_array = (u8 *)malloc(format_array_size);
     
     result.end_code = (u16 *)format_array;
     result.start_code = result.end_code + (result.seg_count_x2/2); 
@@ -421,18 +421,18 @@ Glyph get_glyph(FontDirectory font_dir, Format4 format, u16 char_code)
     result.x_max = GET_16_MOVE(glyph_ptr);
     result.y_max = GET_16_MOVE(glyph_ptr);
 
-    result.end_pts_of_contours = malloc(result.number_of_contours*sizeof(u16));
+    result.end_pts_of_contours = (u16 *)malloc(result.number_of_contours*sizeof(u16));
     for(int i = 0; i < result.number_of_contours; ++i)
     {
         result.end_pts_of_contours[i] = GET_16_MOVE(glyph_ptr);
     }
     result.instruction_length = GET_16_MOVE(glyph_ptr);
-    result.instructions = malloc(result.instruction_length);
+    result.instructions = (u8 *)malloc(result.instruction_length);
     memcpy(result.instructions, glyph_ptr, result.instruction_length);
     MOVE_P(glyph_ptr, result.instruction_length);
     
     i32 array_size = result.end_pts_of_contours[result.number_of_contours-1] + 1;
-    result.flags = malloc(array_size);
+    result.flags = (OutlineFlag *)malloc(array_size);
     for(i32 i = 0; i < array_size; ++i)
     {
         result.flags[i].flag = *glyph_ptr;
@@ -450,7 +450,7 @@ Glyph get_glyph(FontDirectory font_dir, Format4 format, u16 char_code)
         }
     }
     
-    result.x_coords = malloc(array_size*sizeof(u16));
+    result.x_coords = (i16 *)malloc(array_size*sizeof(u16));
     i16 current_coord = 0;
     i16 prev_coord = 0;
     for(i32 i = 0; i < array_size; ++i)
@@ -480,7 +480,7 @@ Glyph get_glyph(FontDirectory font_dir, Format4 format, u16 char_code)
         prev_coord = result.x_coords[i];
     }
 
-    result.y_coords = malloc(array_size*sizeof(u16));
+    result.y_coords = (i16 *)malloc(array_size*sizeof(u16));
     current_coord = 0;
     prev_coord = 0;
     for(i32 i = 0; i < array_size; ++i)
@@ -615,7 +615,7 @@ Hmtx load_hmtx_table(FontDirectory font_dir)
  
     int num_of_long_hormetrics = GET_16(font_dir.hhea_ptr + 34);
 
-    result.h_metrics = malloc(num_of_long_hormetrics*sizeof(LongHorMetric));
+    result.h_metrics = (LongHorMetric *)malloc(num_of_long_hormetrics*sizeof(LongHorMetric));
     for(i32 i = 0; i < num_of_long_hormetrics; ++i)
     {
         LongHorMetric *h_metric = result.h_metrics + i;
@@ -646,11 +646,12 @@ void generate_bezier_points(v2f *output, i32 *output_size, v2f p0, v2f p1, v2f p
 void generate_glyph_point(Glyph glyph, v2f *output, i32 *output_size)
 {
     i32 contour_start = 0;
+    i32 output_index = 0;
     for(i32 i = 0; i < glyph.number_of_contours; ++i)
     {
         i32 contour_length =  glyph.end_pts_of_contours[i] - contour_start;       
         
-        for(i32 j = 0; j < glyph.end_pts_of_contours[i]; ++j)
+        for(i32 j = 0; j < contour_length; ++j)
         {
             i32 point_index = j + contour_start;
             i32 next_point_index = ((j + 1) % contour_length) + contour_start; 
@@ -658,30 +659,25 @@ void generate_glyph_point(Glyph glyph, v2f *output, i32 *output_size)
             OutlineFlag flag = glyph.flags[point_index];
             OutlineFlag next_flag = glyph.flags[next_point_index];           
             
-            v2f point = {
-                .x = glyph.x_coords[point_index],
-                .y = glyph.y_coords[point_index],
-            };
-            v2f next_point = {
-                .x = glyph.x_coords[next_point_index],
-                .y = glyph.y_coords[next_point_index],
-            };
+            v2f point = { (f32)glyph.x_coords[point_index], (f32)glyph.y_coords[point_index] };
+            v2f next_point = { (f32)glyph.x_coords[next_point_index], (f32)glyph.y_coords[next_point_index] };
 
             if(flag.on_curver)
             {
-                output[*output_size] = point;
-                *output_size += 1;
+                output[output_index] = point;
+                output_index += 1;
             }
             else
             {
-                v2f p0 = output[(*output_size)-1];
+                v2f p0 = output[output_index-1];
+                (void)p0;
                 v2f p1 = point;
                 v2f p2 = next_point; 
                 if(next_flag.on_curver) // NOTE(tomi): Quadratic curve
                 {
                     i32 size = 0;
-                    generate_bezier_points(output + *(output_size), &size, p0, p1, p2);
-                    *output_size += size;
+                    generate_bezier_points(output + output_index, &size, p0, p1, p2);
+                    output_index += size;
                     j++; // NOTE(tomi) We already add the next point
                 }
                 else // NOTE(tomi): Cubic curve
@@ -689,13 +685,14 @@ void generate_glyph_point(Glyph glyph, v2f *output, i32 *output_size)
                     p2.x = p1.x + 0.5f*(p2.x - p1.x);
                     p2.y = p1.x + 0.5f*(p2.y - p1.y);
                     i32 size = 0;
-                    generate_bezier_points(output + *(output_size), &size, p0, p1, p2);
-                    *output_size += size;
+                    generate_bezier_points(output + output_index, &size, p0, p1, p2);
+                    output_index += size;
                 }
             }
         }
         contour_start = glyph.end_pts_of_contours[i];
     }
+    *output_size = output_index;
 }
 
 int main()
@@ -706,7 +703,7 @@ int main()
     if(file_content)
     {
         char *start = (char *)file_content;
-        FontDirectory font_dir = {0};
+        FontDirectory font_dir = {};
         
         load_font_directory(start, &font_dir);
         
