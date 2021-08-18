@@ -69,6 +69,9 @@ read_entire_file(const char *file_path, u32 *file_size)
 #define HHEA_TAG TAG('h', 'h', 'e', 'a')
 #define HMTX_TAG TAG('h', 'm', 't', 'x')
 
+#define MIN(a, b) ((a) < (b) ? (a) : (b))
+#define MAX(a, b) ((a) > (b) ? (a) : (b))
+
 // NOTE(tomi): Font Directory code
 typedef struct
 {
@@ -742,6 +745,80 @@ f32 scale_pixel_height(Hhead hhea, f32 height)
     return result;
 }
 
+void linear_sort(float *array, i32 array_size)
+{
+    for(int i = 0; i < array_size; ++i)
+    {
+        for(int j = (i + 1); j < array_size; ++j)
+        {
+            if(array[i] > array[j])
+            {
+                f32 temp = array[i];
+                array[i] = array[j];
+                array[j] = temp;
+            }
+        }
+    }
+}
+
+u8 *rasterize_glyph(Line *lines, i32 lines_count, i32 bitmap_height, i32 bitmap_width)
+{
+    f32 intersections[64] = {};
+    u8 *result = (u8 *)malloc(bitmap_height*bitmap_width);
+    i32 intersection_count = 0;
+    
+    for(int y = 0; y < bitmap_height; y++)
+    {
+        intersection_count = 0;
+        i32 scanline = y;
+
+        for(int i = 0; i < lines_count; ++i)
+        {
+            Line *line = lines + i;
+
+            f32 max_y = MAX(line->p0.y, line->p1.y);
+            f32 min_y = MIN(line->p0.y, line->p1.y);
+
+            if(scanline <= min_y) continue;
+            if(scanline >= max_y) continue;
+
+            f32 dx = line->p1.x - line->p0.x;
+            f32 dy = line->p1.y - line->p0.y;
+
+            if(dy == 0) continue;
+
+            f32 intersection = -1;
+            if(dx == 0)
+            {
+                intersection = line->p0.x;
+            }
+            else
+            {
+                intersection = (scanline - line->p0.y)*(dx/dy) + line->p0.x;
+            }
+            intersections[intersection_count++] = intersection;
+        }
+
+        linear_sort(intersections, intersection_count);
+        
+        if(intersection_count > 1)
+        {
+            for(i32 m = 0; m < intersection_count; m += 2)
+            {
+                i32 start_index = intersections[m];
+                i32 end_index = intersections[m+1];
+
+                for(i32 i = start_index; i <= end_index; ++i)
+                {
+                    result[i+y*bitmap_width] = 255;
+                }
+            }
+        }
+    }
+
+    return result;
+}
+
 #define WINDOW_WIDTH 800
 #define WINDOW_HEIGHT 600
 
@@ -864,13 +941,27 @@ int main()
         static v2f buffer[1024];
         i32 buffer_size = 0;
     
-        char code_point = '6';
+        char code_point = 'A';
         Glyph glyph = get_glyph(font_dir, format, code_point);
         i32 *contour_end_index = (i32 *)malloc(glyph.number_of_contours*sizeof(i32));
-        generate_glyph_points(glyph, buffer, &buffer_size, scale_pixel_height(hhea, 200), contour_end_index);
-        
+        generate_glyph_points(glyph, buffer, &buffer_size, scale_pixel_height(hhea, 100), contour_end_index);
+
+
         int line_count = 0;
         Line *lines = generate_glyph_lines(glyph, &line_count, buffer, contour_end_index);
+        
+        u8 *bitmap_glyph = rasterize_glyph(lines, line_count, 100, 100);
+        u32 texture_id = 0;
+        glGenTextures(1, &texture_id);
+        glBindTexture(GL_TEXTURE_2D, texture_id);
+        // NOTE: Set texture parameters
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+        // NOTE: Generate texture
+        glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RED, 100, 100, 0, GL_RED, GL_UNSIGNED_BYTE, bitmap_glyph);
+        glPixelStorei(GL_UNPACK_ALIGNMENT, 4);
+        glBindTexture(GL_TEXTURE_2D, 0);
         
         while(is_running)
         {
@@ -885,11 +976,21 @@ int main()
             glClearColor(0.2f, 0.2f, 0.2f, 1.0f);
             glClear(GL_COLOR_BUFFER_BIT);
             
+            glBindTexture(GL_TEXTURE_2D, texture_id);
+            glBegin(GL_QUADS);
+            glColor3f(1, 1, 1);
+            glTexCoord2f(0.f, 0.f); glVertex2i(0, 0);
+            glTexCoord2f(1.f, 0.f); glVertex2i(100, 0);
+            glTexCoord2f(1.f, 1.f); glVertex2i(100, 100);
+            glTexCoord2f(0.f, 1.f); glVertex2i(0, 100);
+            glEnd();
+            glBindTexture(GL_TEXTURE_2D, 0);
+            
             glBegin(GL_LINES);
             for(i32 i = 0; i < line_count; ++i)
             {
-                glVertex2f(lines[i].p0.x+10, lines[i].p0.y+10);
-                glVertex2f(lines[i].p1.x+10, lines[i].p1.y+10);
+                glVertex2f(lines[i].p0.x, lines[i].p0.y);
+                glVertex2f(lines[i].p1.x, lines[i].p1.y);
             }
             glEnd();
 
