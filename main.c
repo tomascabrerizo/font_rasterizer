@@ -646,13 +646,14 @@ void generate_bezier_points(v2f *output, i32 *output_size, v2f p0, v2f p1, v2f p
     *output_size = size;
 }
 
-void generate_glyph_points(Glyph glyph, v2f *output, i32 *output_size, f32 scale)
+void generate_glyph_points(Glyph glyph, v2f *output, i32 *output_size, f32 scale, i32 *contour_end_index)
 {
     i32 contour_start = 0;
     i32 output_index = 0;
+    i32 contour_start_index = 0;
     for(i32 i = 0; i < glyph.number_of_contours; ++i)
     {
-        i32 contour_length =  glyph.end_pts_of_contours[i] - contour_start;       
+        i32 contour_length =  (glyph.end_pts_of_contours[i]+1) - contour_start;
         
         for(i32 j = 0; j < contour_length; ++j)
         {
@@ -685,23 +686,54 @@ void generate_glyph_points(Glyph glyph, v2f *output, i32 *output_size, f32 scale
                 else // NOTE(tomi): Cubic curve
                 {
                     p2.x = p1.x + 0.5f*(p2.x - p1.x);
-                    p2.y = p1.x + 0.5f*(p2.y - p1.y);
+                    p2.y = p1.y + 0.5f*(p2.y - p1.y);
                     i32 size = 0;
                     generate_bezier_points(output + output_index, &size, p0, p1, p2);
                     output_index += size;
                 }
             }
         }
-        contour_start = glyph.end_pts_of_contours[i];
+        
+        output[output_index++] = output[contour_start_index];
+        contour_start_index = output_index;
+        contour_start = glyph.end_pts_of_contours[i]+1;
+        contour_end_index[i] = output_index;
     }
     *output_size = output_index;
-    
     for(i32 i = 0; i < output_index; ++i)
     {
-        // TODO(tomi): Maybe traslate the glyph 
-        output[i].x = scale*output[i].x;
-        output[i].y = scale*output[i].y;
+        output[i].x = scale*(output[i].x - glyph.x_min);
+        output[i].y = scale*(output[i].y - glyph.y_min);
     }
+}
+
+typedef struct
+{
+    v2f p0;
+    v2f p1;
+} Line;
+
+Line *generate_glyph_lines(Glyph glyph, i32 *line_count, v2f *glyph_points, i32 *contour_end_index)
+{
+    Line *result = (Line *)malloc(sizeof(Line) * contour_end_index[glyph.number_of_contours-1]);
+    i32 j = 0;
+    i32 line_index = 0;
+    for(i32 i = 0; i < glyph.number_of_contours; ++i)
+    {
+        for(; j < contour_end_index[i]-1; ++j)
+        {
+            Line *line = result + line_index;
+            line->p0.x = glyph_points[j].x; 
+            line->p0.y = glyph_points[j].y; 
+            line->p1.x = glyph_points[j+1].x; 
+            line->p1.y = glyph_points[j+1].y; 
+            ++line_index;
+        }
+        // NOTE(tomi): skip the last point in contour already added
+        ++j;
+    }
+    *line_count = line_index;
+    return result;
 }
 
 f32 scale_pixel_height(Hhead hhea, f32 height)
@@ -712,27 +744,6 @@ f32 scale_pixel_height(Hhead hhea, f32 height)
 
 #define WINDOW_WIDTH 800
 #define WINDOW_HEIGHT 600
-
-static u32 is_running = 1;
-
-LRESULT CALLBACK window_callback(HWND hwnd, UINT msg, WPARAM w_param, LPARAM l_param)
-{
-    LRESULT result = 0;
-
-    switch(msg)
-    {
-        case WM_CLOSE:
-        {
-            is_running = 0;
-        }break;
-        default:
-        {
-            result = DefWindowProcA(hwnd, msg, w_param, l_param);
-        }break;
-    }
-
-    return result;
-}
 
 void create_wglcontext(HDC device_context)
 {
@@ -753,6 +764,67 @@ void create_wglcontext(HDC device_context)
     wglMakeCurrent(device_context, opengl_context);
 }
 
+static u32 is_running = 1;
+
+LRESULT CALLBACK window_callback(HWND window, UINT msg, WPARAM w_param, LPARAM l_param)
+{
+    LRESULT result = 0;
+
+    switch(msg)
+    {
+        case WM_CREATE:
+        {
+            HDC device_context = GetDC(window);
+            create_wglcontext(device_context);
+            
+            RECT window_dim = {};
+            GetClientRect(window, &window_dim);
+            i32 window_width = window_dim.right - window_dim.left;
+            i32 window_height = window_dim.bottom - window_dim.top;
+
+            glViewport(0, 0, window_width, window_height);
+            
+            glMatrixMode(GL_PROJECTION);
+            glLoadIdentity();
+            glOrtho(0.0f, (f32)window_width, (f32)window_height, 0.0f, 0.0f, 1.0f);
+            
+            glMatrixMode(GL_MODELVIEW);
+            glLoadIdentity();
+            
+            glEnable(GL_BLEND);
+            glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+            glEnable(GL_TEXTURE_2D);
+
+        }break;
+        case WM_SIZE:
+        {
+            RECT window_dim = {};
+            GetClientRect(window, &window_dim);
+            i32 window_width = window_dim.right - window_dim.left;
+            i32 window_height = window_dim.bottom - window_dim.top;
+
+            glViewport(0, 0, window_width, window_height);
+            
+            glMatrixMode(GL_PROJECTION);
+            glLoadIdentity();
+            glOrtho(0.0f, (f32)window_width, 0.0f, window_height, 0.0f, 1.0f);
+            
+            glMatrixMode(GL_MODELVIEW);
+            glLoadIdentity();
+        }break;
+        case WM_CLOSE:
+        {
+            is_running = 0;
+        }break;
+        default:
+        {
+            result = DefWindowProcA(window, msg, w_param, l_param);
+        }break;
+    }
+
+    return result;
+}
+
 int main()
 {
     // NOTE(tomi): Test window to show the glyphs
@@ -771,27 +843,7 @@ int main()
                                   WINDOW_WIDTH, WINDOW_HEIGHT,
                                   0, 0, 0, 0);
     HDC device_context = GetDC(window);
-    // TODO(tomi): Create the contect in WM_CREATE
-    create_wglcontext(device_context);
-    
-    RECT window_dim = {};
-    GetClientRect(window, &window_dim);
-    i32 window_width = window_dim.right - window_dim.left;
-    i32 window_height = window_dim.bottom - window_dim.top;
-
-    glViewport(0, 0, window_width, window_height);
-    
-    glMatrixMode(GL_PROJECTION);
-    glLoadIdentity();
-    glOrtho(0.0f, (f32)window_width, (f32)window_height, 0.0f, 1.0f, -1.0f);
-    
-    glMatrixMode(GL_MODELVIEW);
-    glLoadIdentity();
-    
-    glEnable(GL_BLEND);
-    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
-    glEnable(GL_TEXTURE_2D);
-    
+ 
     u32 file_size = 0;
     const char *file_content = read_entire_file("fonts/UbuntuMono-Regular.ttf", &file_size);
     //const char *file_content = read_entire_file("fonts/Envy Code R.ttf", &file_size);
@@ -812,12 +864,14 @@ int main()
         static v2f buffer[1024];
         i32 buffer_size = 0;
     
-        Glyph glyph = get_glyph(font_dir, format, 'A');
-        generate_glyph_points(glyph, buffer, &buffer_size, scale_pixel_height(hhea, 200));
+        char code_point = '6';
+        Glyph glyph = get_glyph(font_dir, format, code_point);
+        i32 *contour_end_index = (i32 *)malloc(glyph.number_of_contours*sizeof(i32));
+        generate_glyph_points(glyph, buffer, &buffer_size, scale_pixel_height(hhea, 200), contour_end_index);
         
-        printf("Number of Points generated: %d\n", buffer_size);
-        print_glyph(glyph, 'A');
-
+        int line_count = 0;
+        Line *lines = generate_glyph_lines(glyph, &line_count, buffer, contour_end_index);
+        
         while(is_running)
         {
             MSG message;
@@ -831,13 +885,14 @@ int main()
             glClearColor(0.2f, 0.2f, 0.2f, 1.0f);
             glClear(GL_COLOR_BUFFER_BIT);
             
-            glBegin(GL_POINTS);
-            for(i32 i = 0; i < buffer_size; ++i)
+            glBegin(GL_LINES);
+            for(i32 i = 0; i < line_count; ++i)
             {
-                glVertex2f(buffer[i].x, buffer[i].y);
+                glVertex2f(lines[i].p0.x+10, lines[i].p0.y+10);
+                glVertex2f(lines[i].p1.x+10, lines[i].p1.y+10);
             }
             glEnd();
-        
+
             SwapBuffers(device_context);
         }
     }
