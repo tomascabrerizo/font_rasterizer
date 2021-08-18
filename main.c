@@ -632,15 +632,15 @@ Hmtx load_hmtx_table(FontDirectory font_dir)
 void generate_bezier_points(v2f *output, i32 *output_size, v2f p0, v2f p1, v2f p2)
 {
     // NOTE(tomi): Cuadratic bezier curve: (1-t)*(1-t)*p0 + 2*t*(1-t)*p1 + t*t*p2
-    i32 subpoints = 5;
+    i32 subpoints = 2;
     f32 advance_per_iter = 1.0f/(f32)subpoints;
     i32 size = 0;
     for(i32 i = 1; i <= subpoints; ++i)
     {
         f32 t = i*advance_per_iter;
-        f32 t1 = (1.0f - advance_per_iter);
-        output[i].x = t1*t1*p0.x + 2*t*t1*p1.x + t*t*p2.x;
-        output[i].y = t1*t1*p0.y + 2*t*t1*p1.y + t*t*p2.y;
+        f32 t1 = (1.0f - t);
+        output[size].x = t1*t1*p0.x + 2*t*t1*p1.x + t*t*p2.x;
+        output[size].y = t1*t1*p0.y + 2*t*t1*p1.y + t*t*p2.y;
         size++;
     }
     *output_size = size;
@@ -710,8 +710,6 @@ f32 scale_pixel_height(Hhead hhea, f32 height)
     return result;
 }
 
-// TODO(tomi): Implement a window to show the rasterized glyph 
-
 #define WINDOW_WIDTH 800
 #define WINDOW_HEIGHT 600
 
@@ -773,7 +771,26 @@ int main()
                                   WINDOW_WIDTH, WINDOW_HEIGHT,
                                   0, 0, 0, 0);
     HDC device_context = GetDC(window);
+    // TODO(tomi): Create the contect in WM_CREATE
     create_wglcontext(device_context);
+    
+    RECT window_dim = {};
+    GetClientRect(window, &window_dim);
+    i32 window_width = window_dim.right - window_dim.left;
+    i32 window_height = window_dim.bottom - window_dim.top;
+
+    glViewport(0, 0, window_width, window_height);
+    
+    glMatrixMode(GL_PROJECTION);
+    glLoadIdentity();
+    glOrtho(0.0f, (f32)window_width, (f32)window_height, 0.0f, 1.0f, -1.0f);
+    
+    glMatrixMode(GL_MODELVIEW);
+    glLoadIdentity();
+    
+    glEnable(GL_BLEND);
+    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+    glEnable(GL_TEXTURE_2D);
     
     u32 file_size = 0;
     const char *file_content = read_entire_file("fonts/UbuntuMono-Regular.ttf", &file_size);
@@ -796,7 +813,7 @@ int main()
         i32 buffer_size = 0;
     
         Glyph glyph = get_glyph(font_dir, format, 'A');
-        generate_glyph_points(glyph, buffer, &buffer_size, scale_pixel_height(hhea, 100));
+        generate_glyph_points(glyph, buffer, &buffer_size, scale_pixel_height(hhea, 200));
         
         printf("Number of Points generated: %d\n", buffer_size);
         print_glyph(glyph, 'A');
@@ -813,8 +830,14 @@ int main()
             // NOTE(tomi): Draw into screen
             glClearColor(0.2f, 0.2f, 0.2f, 1.0f);
             glClear(GL_COLOR_BUFFER_BIT);
-
-
+            
+            glBegin(GL_POINTS);
+            for(i32 i = 0; i < buffer_size; ++i)
+            {
+                glVertex2f(buffer[i].x, buffer[i].y);
+            }
+            glEnd();
+        
             SwapBuffers(device_context);
         }
     }
