@@ -3,6 +3,9 @@
 #include <string.h>
 #include <assert.h>
 
+#include <Windows.h>
+#include <GL/gl.h>
+
 typedef unsigned int u32;
 typedef unsigned short u16;
 typedef unsigned char u8;
@@ -643,7 +646,7 @@ void generate_bezier_points(v2f *output, i32 *output_size, v2f p0, v2f p1, v2f p
     *output_size = size;
 }
 
-void generate_glyph_point(Glyph glyph, v2f *output, i32 *output_size)
+void generate_glyph_points(Glyph glyph, v2f *output, i32 *output_size, f32 scale)
 {
     i32 contour_start = 0;
     i32 output_index = 0;
@@ -670,7 +673,6 @@ void generate_glyph_point(Glyph glyph, v2f *output, i32 *output_size)
             else
             {
                 v2f p0 = output[output_index-1];
-                (void)p0;
                 v2f p1 = point;
                 v2f p2 = next_point; 
                 if(next_flag.on_curver) // NOTE(tomi): Quadratic curve
@@ -693,10 +695,86 @@ void generate_glyph_point(Glyph glyph, v2f *output, i32 *output_size)
         contour_start = glyph.end_pts_of_contours[i];
     }
     *output_size = output_index;
+    
+    for(i32 i = 0; i < output_index; ++i)
+    {
+        // TODO(tomi): Maybe traslate the glyph 
+        output[i].x = scale*output[i].x;
+        output[i].y = scale*output[i].y;
+    }
+}
+
+f32 scale_pixel_height(Hhead hhea, f32 height)
+{
+    f32 result = height / (hhea.ascent - hhea.descent);
+    return result;
+}
+
+// TODO(tomi): Implement a window to show the rasterized glyph 
+
+#define WINDOW_WIDTH 800
+#define WINDOW_HEIGHT 600
+
+static u32 is_running = 1;
+
+LRESULT CALLBACK window_callback(HWND hwnd, UINT msg, WPARAM w_param, LPARAM l_param)
+{
+    LRESULT result = 0;
+
+    switch(msg)
+    {
+        case WM_CLOSE:
+        {
+            is_running = 0;
+        }break;
+        default:
+        {
+            result = DefWindowProcA(hwnd, msg, w_param, l_param);
+        }break;
+    }
+
+    return result;
+}
+
+void create_wglcontext(HDC device_context)
+{
+    PIXELFORMATDESCRIPTOR pixel_format = {};
+    pixel_format.nSize = sizeof(pixel_format);
+    pixel_format.nVersion = 1;
+    pixel_format.dwFlags = PFD_DRAW_TO_WINDOW|PFD_SUPPORT_OPENGL|PFD_DOUBLEBUFFER;
+    pixel_format.iPixelType = PFD_TYPE_RGBA;
+    pixel_format.cColorBits = 32;
+    pixel_format.cDepthBits = 24;
+    pixel_format.cStencilBits = 8;
+    pixel_format.iLayerType = PFD_MAIN_PLANE;
+
+    int window_pixel_fomat = ChoosePixelFormat(device_context, &pixel_format);
+    SetPixelFormat(device_context, window_pixel_fomat, &pixel_format);
+
+    HGLRC opengl_context= wglCreateContext(device_context);
+    wglMakeCurrent(device_context, opengl_context);
 }
 
 int main()
 {
+    // NOTE(tomi): Test window to show the glyphs
+    WNDCLASSA window_class = {};
+    window_class.style = CS_OWNDC|CS_HREDRAW|CS_VREDRAW;
+    window_class.lpfnWndProc = window_callback;
+    window_class.hInstance = 0;
+    window_class.lpszClassName = "window_class";
+
+    RegisterClassA(&window_class);
+    
+    HWND window = CreateWindowExA(0, window_class.lpszClassName, 
+                                  "font raster", 
+                                  WS_OVERLAPPEDWINDOW|WS_VISIBLE, 
+                                  CW_USEDEFAULT, CW_USEDEFAULT,
+                                  WINDOW_WIDTH, WINDOW_HEIGHT,
+                                  0, 0, 0, 0);
+    HDC device_context = GetDC(window);
+    create_wglcontext(device_context);
+    
     u32 file_size = 0;
     const char *file_content = read_entire_file("fonts/UbuntuMono-Regular.ttf", &file_size);
     //const char *file_content = read_entire_file("fonts/Envy Code R.ttf", &file_size);
@@ -709,7 +787,6 @@ int main()
         
         CMap cmap = load_cmap_table(font_dir);
         Hhead hhea = load_hhea_table(font_dir);
-        (void)hhea;
         Hmtx hmtx = load_hmtx_table(font_dir);
         (void)hmtx;
 
@@ -719,9 +796,27 @@ int main()
         i32 buffer_size = 0;
     
         Glyph glyph = get_glyph(font_dir, format, 'A');
-        generate_glyph_point(glyph, buffer, &buffer_size);
+        generate_glyph_points(glyph, buffer, &buffer_size, scale_pixel_height(hhea, 100));
+        
         printf("Number of Points generated: %d\n", buffer_size);
         print_glyph(glyph, 'A');
+
+        while(is_running)
+        {
+            MSG message;
+            while(PeekMessageA(&message, 0, 0, 0, PM_REMOVE))
+            {
+                TranslateMessage(&message);
+                DispatchMessageA(&message);
+            }
+
+            // NOTE(tomi): Draw into screen
+            glClearColor(0.2f, 0.2f, 0.2f, 1.0f);
+            glClear(GL_COLOR_BUFFER_BIT);
+
+
+            SwapBuffers(device_context);
+        }
     }
     
     return 0;
